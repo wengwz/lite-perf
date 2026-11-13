@@ -64,7 +64,7 @@ auto& profiler = lite_perf::Profiler::instance();
 profiler.write_report(std::cout);
 ```
 
-`LITE_PERF_FUNC()` uses the current function name as the label. For more control over measurement intervals:
+`LITE_PERF_FUNC()` uses the full function signature on GCC/Clang (`__PRETTY_FUNCTION__`) and MSVC (`__FUNCSIG__`), including namespace, class name, and parameter types. Member functions such as `void MyClass::run()` therefore retain their class name, and overloads are aggregated separately. Signature spelling depends on the compiler; other compilers fall back to `__func__`. Use `LITE_PERF_SCOPE("MyClass::run")` for a custom, stable label. For more control over measurement intervals:
 
 ```cpp
 lite_perf::Scope scope("partial scope");
@@ -120,6 +120,8 @@ for (const auto& node : snapshot.call_tree) {
 
 `write_report(out, bool verbose = false, TimeUnit unit = TimeUnit::Seconds)` prints per-thread call trees with `tree`-style Unicode branches. Rows contain the invocation's name, inclusive duration, parent percentage, and completion status. Passing `true` also includes `ID` and `Parent ID` columns. `Snapshot::write_report` accepts the same parameter.
 
+Both reports automatically expand the name column for long labels (including escaped characters). Call tree reports also account for nesting depth, keeping subsequent columns aligned.
+
 - The parent percentage is `100 * child.duration_ns / parent.duration_ns`, shown with two decimal places. It is `N/A` for roots, unfinished calls, unfinished parents, or zero-duration parents. Unfinished durations also display `N/A`.
 - If a parent was explicitly stopped early, a completed child's percentage may exceed 100%; it is not clamped.
 - Every invocation remains a distinct node, including repeated names and paths, recursive calls, and calls on different threads. Siblings and roots remain in creation order inside each thread group.
@@ -157,7 +159,7 @@ saved.write_report(std::cout);
 saved.write_summary_report(std::cout);
 ```
 
-The summary merges labels across all threads and paths, sorting rows by name. `Calls`, `Total (s)`, `Min (s)`, `Max (s)`, and `Mean (s)` use **completed calls only**. `Incomplete` counts unfinished invocations separately; their durations never enter the aggregates. A label with only unfinished calls has zero calls and total time, and `N/A` minimum, maximum, and mean. Completed zero-duration calls participate normally. Reports preserve the caller's stream flags and precision.
+The summary merges labels across all threads and paths, sorting rows by total duration in descending order, then by name for equal totals. `Calls`, `Total (s)`, `Min (s)`, `Max (s)`, and `Mean (s)` use **completed calls only**. `Incomplete` counts unfinished invocations separately; their durations never enter the aggregates. A label with only unfinished calls has zero calls and total time, and `N/A` minimum, maximum, and mean. Completed zero-duration calls participate normally. Reports preserve the caller's stream flags and precision.
 
 ## Disable instrumentation
 

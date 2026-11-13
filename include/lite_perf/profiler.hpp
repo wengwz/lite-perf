@@ -64,10 +64,16 @@ struct Snapshot {
     /// Output uses a private buffer to preserve the caller's stream format.
     void write_report(std::ostream& out, bool verbose = false, TimeUnit unit = TimeUnit::Seconds) const {
         std::vector<std::vector<std::size_t>> children(call_tree.size());
+        std::vector<std::size_t> depths(call_tree.size());
+        std::size_t name_column_width = 32;
         for (const auto& node : call_tree) {
             if (node.parent_id != node.id) {
                 children[node.parent_id].push_back(node.id);
+                // Parents precede children in creation order.
+                depths[node.id] = depths[node.parent_id] + 1;
             }
+            name_column_width = std::max(name_column_width,
+                4 * (depths[node.id] + 1) + quote(node.name).size());
         }
         std::ostringstream report;
         const auto format = time_format(unit);
@@ -82,7 +88,7 @@ struct Snapshot {
         std::vector<bool> continuation;
         for (const auto& thread : threads) {
             report << "Thread " << thread.thread_id << '\n';
-            report << std::left << std::setw(32) << "Name" << std::right;
+            report << std::left << std::setw(static_cast<int>(name_column_width)) << "Name" << std::right;
             if (verbose) {
                 report << std::setw(12) << "ID" << std::setw(12) << "Parent ID";
             }
@@ -103,11 +109,11 @@ struct Snapshot {
                 prefix += item.last ? "└── " : "├── ";
                 continuation.push_back(!item.last);
                 // setw counts UTF-8 bytes; compensate for the branch glyphs' display width.
-                const auto name_width = 32 + prefix.size() - 4 * (item.depth + 1);
+                const auto name_width = name_column_width + prefix.size() - 4 * (item.depth + 1);
                 report << std::left << std::setw(static_cast<int>(name_width)) << (prefix + quote(node.name))
-                       << ' ' << std::right;
+                       << std::right;
                 if (verbose) {
-                    report << std::setw(11) << node.id << std::setw(12) << node.parent_id;
+                    report << std::setw(12) << node.id << std::setw(12) << node.parent_id;
                 }
                 report << ' ' << std::setw(16) << duration(node.duration_ns, unit, node.completed)
                        << ' ' << std::setw(14) << parent_percentage(node)
@@ -122,6 +128,7 @@ struct Snapshot {
     }
 
     /// Aggregate completed calls by label across all threads; count unfinished calls separately.
+    /// Rows sort by descending total duration, then by label for equal totals.
     void write_summary_report(std::ostream& out, TimeUnit unit = TimeUnit::Seconds) const {
         struct Summary {
             std::uint64_t count = 0;
@@ -142,20 +149,32 @@ struct Snapshot {
             summary.total_ns += node.duration_ns;
             ++summary.count;
         }
+        std::vector<const decltype(summaries)::value_type*> ordered;
+        std::size_t name_column_width = 32;
+        for (const auto& entry : summaries) {
+            ordered.push_back(&entry);
+            name_column_width = std::max(name_column_width, quote(entry.first).size());
+        }
+        std::sort(ordered.begin(), ordered.end(), [](const auto* lhs, const auto* rhs) {
+            if (lhs->second.total_ns != rhs->second.total_ns) {
+                return lhs->second.total_ns > rhs->second.total_ns;
+            }
+            return lhs->first < rhs->first;
+        });
         std::ostringstream report;
         const auto format = time_format(unit);
         report << "lite-perf summary (completed calls, " << format.name << ")\n"
-               << std::left << std::setw(32) << "Name"
+               << std::left << std::setw(static_cast<int>(name_column_width)) << "Name"
                << std::right << std::setw(12) << "Calls"
                << ' ' << std::setw(16) << (std::string("Total (") + format.symbol + ")")
                << ' ' << std::setw(16) << (std::string("Min (") + format.symbol + ")")
                << ' ' << std::setw(16) << (std::string("Max (") + format.symbol + ")")
                << ' ' << std::setw(16) << (std::string("Mean (") + format.symbol + ")")
                << ' ' << std::setw(14) << "Incomplete" << '\n';
-        for (const auto& entry : summaries) {
-            const auto& stats = entry.second;
+        for (const auto* entry : ordered) {
+            const auto& stats = entry->second;
             const auto mean = stats.count == 0 ? 0.0 : static_cast<double>(stats.total_ns) / stats.count;
-            report << std::left << std::setw(32) << quote(entry.first)
+            report << std::left << std::setw(static_cast<int>(name_column_width)) << quote(entry->first)
                    << ' ' << std::right << std::setw(11) << stats.count
                    << ' ' << std::setw(16) << duration(stats.total_ns, unit)
                    << ' ' << std::setw(16) << duration(stats.min_ns, unit, stats.count != 0)
@@ -392,8 +411,14 @@ private:
 /// Time the current scope with the given label using the singleton.
 #define LITE_PERF_SCOPE(name) \
     ::lite_perf::Scope LITE_PERF_DETAIL_JOIN(lite_perf_scope_, LITE_PERF_DETAIL_UNIQUE){name}
-/// Use the current function name; use LITE_PERF_SCOPE to distinguish overloads or namesakes.
+/// Include class/namespace qualification and overload information where supported.
+#if defined(_MSC_VER)
+#define LITE_PERF_FUNC() LITE_PERF_SCOPE(__FUNCSIG__)
+#elif defined(__clang__) || defined(__GNUC__)
+#define LITE_PERF_FUNC() LITE_PERF_SCOPE(__PRETTY_FUNCTION__)
+#else
 #define LITE_PERF_FUNC() LITE_PERF_SCOPE(__func__)
+#endif
 #else
 // Remove arguments during preprocessing: do not evaluate labels or read the clock.
 #define LITE_PERF_SCOPE(name) ((void)0)

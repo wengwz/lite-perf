@@ -64,7 +64,7 @@ auto& profiler = lite_perf::Profiler::instance();
 profiler.write_report(std::cout);
 ```
 
-`LITE_PERF_FUNC()` 使用当前函数名作为标签。需要更灵活地控制时间区间时：
+`LITE_PERF_FUNC()` 在 GCC/Clang 下使用 `__PRETTY_FUNCTION__`，在 MSVC 下使用 `__FUNCSIG__`，记录包含命名空间、类名及参数类型的完整函数签名。例如成员函数会显示为 `void MyClass::run()`，不同重载也会分别统计。签名的具体格式由编译器决定；其他编译器回退到 `__func__`。如需固定的自定义名称，可以使用 `LITE_PERF_SCOPE("MyClass::run")`。需要更灵活地控制时间区间时：
 
 ```cpp
 lite_perf::Scope scope("partial scope");
@@ -120,6 +120,8 @@ for (const auto& node : snapshot.call_tree) {
 
 `write_report(out, bool verbose = false, TimeUnit unit = TimeUnit::Seconds)` 按线程输出带 `tree` 风格 Unicode 分支的调用树。默认每行包含名称、本次耗时、占父节点耗时的比例及完成状态；传入 `true` 时额外输出 `ID` 和 `Parent ID` 两列。`Snapshot::write_report` 同样支持此参数。
 
+两种报告的 Name 列均会根据名称长度（含转义后的字符）自动扩展；调用树报告还会计入层级缩进，使后续各列保持对齐。
+
 - 占比为 `100 * child.duration_ns / parent.duration_ns`，保留两位小数。根节点、未完成调用、父节点未完成或父节点耗时为零时显示 `N/A`；未完成调用的耗时同样显示 `N/A`。
 - 如果父作用域显式提前停止，子调用完成后的占比可能超过 100%，报告不会截断此比例。
 - 每次调用均有独立节点，同名、重复路径、递归、不同线程的调用分别保留。每个线程内的根节点与同级子节点保留创建顺序。
@@ -157,7 +159,7 @@ saved.write_report(std::cout);
 saved.write_summary_report(std::cout);
 ```
 
-汇总报告跨线程、跨路径合并同名 Scope，按名称排序。`Calls`、`Total (s)`、`Min (s)`、`Max (s)`、`Mean (s)` **只统计已完成调用**；`Incomplete` 单独列出未完成数量，其耗时不参与计算。某个名称只有未完成调用时，次数和总耗时为零，最小、最大及平均耗时显示 `N/A`。已完成的零耗时调用正常参与统计。两种报告均保留输出流原来的格式与精度设置。
+汇总报告跨线程、跨路径合并同名 Scope，按已完成调用的总耗时从大到小排序，总耗时相同时按名称排序。`Calls`、`Total (s)`、`Min (s)`、`Max (s)`、`Mean (s)` **只统计已完成调用**；`Incomplete` 单独列出未完成数量，其耗时不参与计算。某个名称只有未完成调用时，次数和总耗时为零，最小、最大及平均耗时显示 `N/A`。已完成的零耗时调用正常参与统计。两种报告均保留输出流原来的格式与精度设置。
 
 ## 关闭埋点
 

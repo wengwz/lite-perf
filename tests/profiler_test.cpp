@@ -138,8 +138,9 @@ void test_lifetime_and_macros() {
         record_from_other_translation_unit();
     }
     const auto snapshot = profiler.snapshot();
-    const auto& parent = single(snapshot, "test_lifetime_and_macros");
     const auto& child = single(snapshot, "owned label");
+    const auto& parent = snapshot.call_tree[child.parent_id];
+    CHECK(parent.name.find("test_lifetime_and_macros") != std::string::npos);
     CHECK(child.parent_id == parent.id);
     CHECK(child.duration_ns >= 1000000 && parent.duration_ns >= child.duration_ns);
     CHECK(single(snapshot, "exception").completed);
@@ -173,7 +174,10 @@ void test_repeated_paths_and_recursion() {
             CHECK(children[i * 3 + j]->completed);
         }
     }
-    const auto recursive = named(snapshot, "record_recursive");
+    std::vector<const lite_perf::CallTreeNode*> recursive;
+    for (const auto& node : snapshot.call_tree) {
+        if (node.name.find("record_recursive") != std::string::npos) { recursive.push_back(&node); }
+    }
     CHECK(recursive.size() == depth);
     for (std::size_t i = 0; i < recursive.size(); ++i) {
         CHECK(recursive[i]->parent_id == (i == 0 ? recursive[i]->id : recursive[i - 1]->id));
@@ -354,7 +358,7 @@ void test_reports() {
                 for (std::size_t j = 0; j < field; ++j) {
                     if ((static_cast<unsigned char>(line[j]) & 0xc0) != 0x80) { ++columns; }
                 }
-                CHECK(columns == (verbose ? 44 - std::to_string(node.id).size() : 50 - duration.size()));
+                CHECK(columns == (verbose ? 44 - std::to_string(node.id).size() : 49 - duration.size()));
                 CHECK(percentage == percentages[expected_id]);
                 CHECK(status == (node.completed ? "completed" : "active"));
                 CHECK(!(row >> name)); // Hidden columns must not leave extra fields.
@@ -371,14 +375,13 @@ void test_reports() {
     std::getline(summary_rows, line);
     std::getline(summary_rows, line);
     std::size_t seen = 0;
-    std::string previous_name;
+    const std::vector<std::string> summary_order{"child", "long", "parent", "active", "other root", "zero"};
     while (std::getline(summary_rows, line)) {
         std::istringstream row(line);
         std::string name, total, min, max, mean;
         std::uint64_t count = 0, incomplete = 0;
         CHECK(static_cast<bool>(row >> std::quoted(name) >> count >> total >> min >> max >> mean >> incomplete));
-        if (seen != 0) { CHECK(previous_name < name); }
-        previous_name = name;
+        CHECK(seen < summary_order.size() && name == summary_order[seen]);
         if (name == "child") {
             CHECK(count == 4 && incomplete == 1);
             CHECK(total == "0.005000" && min == "0.000000" && max == "0.002000" && mean == "0.001250");
@@ -497,9 +500,8 @@ void test_report_units() {
         std::uint64_t count = 0, incomplete = 0;
         double total = 0, min = 0, max = 0, mean = 0;
         CHECK(static_cast<bool>(row >> std::quoted(name) >> count >> total >> min >> max >> mean >> incomplete));
-        CHECK(name == "child" && count == 2 && incomplete == 1);
-        CHECK(total == 500000000 / test.divisor && min == 125000000 / test.divisor);
-        CHECK(max == 375000000 / test.divisor && mean == 250000000 / test.divisor);
+        CHECK(name == "parent" && count == 1 && incomplete == 0);
+        CHECK(total == 2000000000 / test.divisor && min == total && max == total && mean == total);
 
         auto& profiler = lite_perf::Profiler::instance();
         std::ostringstream direct, saved, direct_summary, saved_summary;
@@ -512,6 +514,104 @@ void test_report_units() {
     }
 }
 
+void test_report_name_width() {
+    lite_perf::Snapshot snapshot;
+    snapshot.call_tree = {
+        {0, 0, "root", 1000000000, true},
+        {1, 0, "a_function_name_that_is_much_longer_than_thirty_two_characters", 200000000, true},
+        {2, 0, std::string(40, '\t') + "\"\\\n", 0, false}
+    };
+    // Deep indentation must expand the column even when every label is short.
+    for (std::size_t id = 3; id < 28; ++id) {
+        snapshot.call_tree.push_back({id, id - 1, "nested", 1000000, true});
+    }
+    snapshot.call_tree.push_back({28, 28, "other thread", 0, true});
+    snapshot.threads = {{std::this_thread::get_id(), {0}}, {std::thread::id{}, {28}}};
+
+    // Count Unicode tree glyphs as one display column each; labels here are ASCII.
+    const auto columns = [](std::string_view text) {
+        std::size_t count = 0;
+        for (unsigned char c : text) {
+            if ((c & 0xc0) != 0x80) { ++count; }
+        }
+        return count;
+    };
+    for (bool verbose : {false, true}) {
+        std::ostringstream out;
+        snapshot.write_report(out, verbose);
+        std::istringstream rows(out.str());
+        std::string line;
+        std::size_t expected_width = 0, seen = 0, headers = 0;
+        while (std::getline(rows, line)) {
+            if (line.rfind("Name", 0) == 0) {
+                if (headers == 0) { expected_width = columns(line); }
+                CHECK(columns(line) == expected_width);
+                ++headers;
+            } else if (line.find('"') != std::string::npos) {
+                CHECK(columns(line) == expected_width);
+                // Numeric columns have fixed widths, so their right edges must match the header.
+                const auto suffix = line.substr(line.rfind('"') + 1);
+                CHECK(suffix.size() >= (verbose ? 68 : 45));
+                CHECK(suffix.front() == ' ');
+                ++seen;
+            }
+        }
+        CHECK(headers == 2 && seen == snapshot.call_tree.size());
+    }
+    std::ostringstream summary;
+    snapshot.write_summary_report(summary);
+    std::istringstream rows(summary.str());
+    std::string line;
+    std::getline(rows, line); // Title.
+    std::getline(rows, line); // Columns.
+    const auto expected_width = columns(line);
+    std::size_t seen = 0;
+    while (std::getline(rows, line)) {
+        CHECK(columns(line) == expected_width);
+        ++seen;
+    }
+    CHECK(seen == 5);
+}
+
+namespace profile_fixture {
+struct Worker {
+    void run() const { LITE_PERF_FUNC(); }
+    void run(int) { LITE_PERF_FUNC(); }
+    static void dispatch() { LITE_PERF_FUNC(); }
+};
+struct Other {
+    void run() { LITE_PERF_FUNC(); }
+};
+} // namespace profile_fixture
+
+void test_member_function_names() {
+    auto& profiler = lite_perf::Profiler::instance();
+    const auto start = profiler.snapshot().call_tree.size();
+    profile_fixture::Worker worker;
+    worker.run();
+    worker.run(1);
+    profile_fixture::Worker::dispatch();
+    profile_fixture::Other{}.run();
+    const auto snapshot = profiler.snapshot();
+    CHECK(snapshot.call_tree.size() == start + 4);
+#if defined(_MSC_VER) || defined(__clang__) || defined(__GNUC__)
+    const std::vector<std::string> qualified_names{
+        "profile_fixture::Worker::run(", "profile_fixture::Worker::run(",
+        "profile_fixture::Worker::dispatch(", "profile_fixture::Other::run("};
+    for (std::size_t i = 0; i < qualified_names.size(); ++i) {
+        const auto& node = snapshot.call_tree[start + i];
+        CHECK(node.name.find(qualified_names[i]) != std::string::npos);
+        CHECK(node.completed);
+        CHECK(named(snapshot, node.name).size() == 1); // Overloads and classes aggregate separately.
+    }
+    CHECK(snapshot.call_tree[start].name.find("const") != std::string::npos);
+    CHECK(snapshot.call_tree[start + 1].name.find("int") != std::string::npos);
+#else
+    CHECK(snapshot.call_tree[start].name == "run");
+    CHECK(snapshot.call_tree[start + 2].name == "dispatch");
+#endif
+}
+
 int main() {
     test_invocations_and_snapshot();
     test_lifetime_and_macros();
@@ -520,5 +620,7 @@ int main() {
     test_threads_and_live_snapshots();
     test_reports();
     test_report_units();
+    test_report_name_width();
+    test_member_function_names();
     std::cout << "All profiler tests passed\n";
 }
