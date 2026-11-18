@@ -19,6 +19,9 @@ if(LITE_PERF_BUILD_EXAMPLES)
 
     add_executable(profiler_multilevel_example examples/multi_level.cpp)
     target_link_libraries(profiler_multilevel_example PRIVATE lite_perf::lite_perf)
+
+    add_executable(profiler_namespaced_class_example examples/namespaced_class.cpp)
+    target_link_libraries(profiler_namespaced_class_example PRIVATE lite_perf::lite_perf)
 endif()
 
 if(LITE_PERF_BUILD_TESTS)

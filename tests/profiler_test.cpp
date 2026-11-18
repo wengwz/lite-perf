@@ -582,6 +582,15 @@ struct Worker {
 struct Other {
     void run() { LITE_PERF_FUNC(); }
 };
+template <typename T, typename U>
+struct Box {
+    Box() { LITE_PERF_FUNC(); }
+    ~Box() { LITE_PERF_FUNC(); }
+    int operator()(int value) const { LITE_PERF_FUNC(); return value; }
+    explicit operator bool() const { LITE_PERF_FUNC(); return true; }
+    template <typename V>
+    V convert(V value) const { LITE_PERF_FUNC(); return value; }
+};
 } // namespace profile_fixture
 
 void test_member_function_names() {
@@ -596,19 +605,56 @@ void test_member_function_names() {
     CHECK(snapshot.call_tree.size() == start + 4);
 #if defined(_MSC_VER) || defined(__clang__) || defined(__GNUC__)
     const std::vector<std::string> qualified_names{
-        "profile_fixture::Worker::run(", "profile_fixture::Worker::run(",
-        "profile_fixture::Worker::dispatch(", "profile_fixture::Other::run("};
+        "profile_fixture::Worker::run", "profile_fixture::Worker::run",
+        "profile_fixture::Worker::dispatch", "profile_fixture::Other::run"};
     for (std::size_t i = 0; i < qualified_names.size(); ++i) {
         const auto& node = snapshot.call_tree[start + i];
-        CHECK(node.name.find(qualified_names[i]) != std::string::npos);
+        CHECK(node.name == qualified_names[i]);
         CHECK(node.completed);
-        CHECK(named(snapshot, node.name).size() == 1); // Overloads and classes aggregate separately.
+        CHECK(named(snapshot, node.name).size() == (i < 2 ? 2 : 1));
     }
-    CHECK(snapshot.call_tree[start].name.find("const") != std::string::npos);
-    CHECK(snapshot.call_tree[start + 1].name.find("int") != std::string::npos);
+    std::ostringstream summary;
+    snapshot.write_summary_report(summary);
+    CHECK(summary.str().find("\"profile_fixture::Worker::run\"") != std::string::npos);
 #else
     CHECK(snapshot.call_tree[start].name == "run");
     CHECK(snapshot.call_tree[start + 2].name == "dispatch");
+#endif
+}
+
+void test_function_name_extraction() {
+    using lite_perf::detail::qualified_function_name;
+    CHECK(qualified_function_name("int ns::Worker::run(double) const", "run") == "ns::Worker::run");
+    CHECK(qualified_function_name("void __cdecl ns::Worker::run(int)", "run") == "ns::Worker::run");
+    CHECK(qualified_function_name("const char *ns::name()", "name") == "ns::name");
+    CHECK(qualified_function_name("int ns::Box<int, double>::operator()(int) const", "operator()")
+          == "ns::Box<int, double>::operator()");
+    CHECK(qualified_function_name("ns::Box<int, double>::operator bool() const", "operator bool")
+          == "ns::Box<int, double>::operator bool");
+    CHECK(qualified_function_name("T ns::Box<T, U>::convert(V) const [with V = int]", "convert")
+          == "ns::Box<T, U>::convert");
+    CHECK(qualified_function_name("int __cdecl ns::convert<int>(int)", "convert") == "ns::convert");
+    CHECK(qualified_function_name("void (*ns::factory())()", "factory") == "ns::factory");
+    CHECK(qualified_function_name("void (anonymous namespace)::run()", "run") == "(anonymous namespace)::run");
+    CHECK(qualified_function_name("unrecognized signature", "run") == "run");
+
+    auto& profiler = lite_perf::Profiler::instance();
+    const auto start = profiler.snapshot().call_tree.size();
+    {
+        profile_fixture::Box<int, double> box;
+        CHECK(box(5) == 5);
+        CHECK(static_cast<bool>(box));
+        CHECK(box.convert(7) == 7);
+    }
+    const auto snapshot = profiler.snapshot();
+    CHECK(snapshot.call_tree.size() == start + 5);
+#if defined(_MSC_VER) || defined(__clang__) || defined(__GNUC__)
+    const std::vector<std::string> endings{"::Box", "::operator()", "::operator bool", "::convert", "::~Box"};
+    for (std::size_t i = 0; i < endings.size(); ++i) {
+        const auto& name = snapshot.call_tree[start + i].name;
+        CHECK(name.rfind("profile_fixture::Box<", 0) == 0);
+        CHECK(name.substr(name.size() - endings[i].size()) == endings[i]);
+    }
 #endif
 }
 
@@ -622,5 +668,6 @@ int main() {
     test_report_units();
     test_report_name_width();
     test_member_function_names();
+    test_function_name_extraction();
     std::cout << "All profiler tests passed\n";
 }

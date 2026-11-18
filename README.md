@@ -64,7 +64,7 @@ auto& profiler = lite_perf::Profiler::instance();
 profiler.write_report(std::cout);
 ```
 
-`LITE_PERF_FUNC()` uses the full function signature on GCC/Clang (`__PRETTY_FUNCTION__`) and MSVC (`__FUNCSIG__`), including namespace, class name, and parameter types. Member functions such as `void MyClass::run()` therefore retain their class name, and overloads are aggregated separately. Signature spelling depends on the compiler; other compilers fall back to `__func__`. Use `LITE_PERF_SCOPE("MyClass::run")` for a custom, stable label. For more control over measurement intervals:
+`LITE_PERF_FUNC()` records the qualified function name, such as `MyClass::run` or `my_namespace::MyClass::run`, without the return type, parameter list, or trailing qualifiers such as `const`. GCC/Clang (`__PRETTY_FUNCTION__`) and MSVC (`__FUNCSIG__`) provide the class/namespace information; unsupported signature formats and other compilers fall back to `__func__`. Template class names retain their template arguments. Overloads with the same qualified name are merged in the summary; use custom labels such as `LITE_PERF_SCOPE("MyClass::run_int")` to distinguish them. For more control over measurement intervals:
 
 ```cpp
 lite_perf::Scope scope("partial scope");
@@ -190,9 +190,12 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ./build/profiler_example
 ./build/profiler_multilevel_example
+./build/profiler_namespaced_class_example
 ```
 
 `examples/multi_level.cpp` demonstrates four levels of function calls: `run_batch → process_item → load_input → read_input`. It prints the thread-grouped call tree and a summary. The tree retains six separate `validate_input` calls; the summary combines them into one row with six completed calls.
+
+`examples/namespaced_class.cpp` demonstrates nested namespaces, classes, const member functions, and a static member function. Labels such as `demo::pipeline::Processor::process` retain namespace and class names without return types or parameter lists. Both reports use milliseconds.
 
 To use the library in an existing CMake project:
 

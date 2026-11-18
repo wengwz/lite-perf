@@ -64,7 +64,7 @@ auto& profiler = lite_perf::Profiler::instance();
 profiler.write_report(std::cout);
 ```
 
-`LITE_PERF_FUNC()` 在 GCC/Clang 下使用 `__PRETTY_FUNCTION__`，在 MSVC 下使用 `__FUNCSIG__`，记录包含命名空间、类名及参数类型的完整函数签名。例如成员函数会显示为 `void MyClass::run()`，不同重载也会分别统计。签名的具体格式由编译器决定；其他编译器回退到 `__func__`。如需固定的自定义名称，可以使用 `LITE_PERF_SCOPE("MyClass::run")`。需要更灵活地控制时间区间时：
+`LITE_PERF_FUNC()` 仅记录带命名空间和类名的函数名称，例如 `MyClass::run` 或 `my_namespace::MyClass::run`，不包含返回类型、参数列表及末尾的 `const` 等限定符。在 GCC/Clang 下从 `__PRETTY_FUNCTION__` 提取名称，MSVC 下使用 `__FUNCSIG__`；无法识别的签名格式及其他编译器回退到 `__func__`。模板类名保留其模板实参。同一限定名称的重载在汇总报告中合并统计；如需区分，可使用 `LITE_PERF_SCOPE("MyClass::run_int")` 等自定义标签。需要更灵活地控制时间区间时：
 
 ```cpp
 lite_perf::Scope scope("partial scope");
@@ -190,9 +190,12 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ./build/profiler_example
 ./build/profiler_multilevel_example
+./build/profiler_namespaced_class_example
 ```
 
 `examples/multi_level.cpp` 展示四层函数调用：`run_batch → process_item → load_input → read_input`，并输出按线程分组的调用树及汇总报告。调用树保留六个独立的 `validate_input` 节点，汇总报告则合并为一行，完成调用次数为六次。
+
+`examples/namespaced_class.cpp` 展示嵌套命名空间、类、const 成员函数及静态成员函数。报告中的名称如 `demo::pipeline::Processor::process`，保留命名空间和类名，不包含返回类型和参数列表。调用树和汇总报告均使用毫秒。
 
 在已有 CMake 项目中使用：
 

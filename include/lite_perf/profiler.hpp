@@ -387,6 +387,49 @@ private:
     bool stopped_ = false;
 };
 
+namespace detail {
+
+// Use __func__ as an anchor so operator names and spaces inside template arguments
+// are not confused with the return type. Return a view into the compiler's static string.
+constexpr std::string_view qualified_function_name(std::string_view signature, std::string_view name) {
+    if (name.empty()) { return name; }
+    for (std::size_t pos = signature.find(name); pos != std::string_view::npos;
+         pos = signature.find(name, pos + 1)) {
+        const auto end = pos + name.size();
+        auto parameters = end;
+        if (parameters < signature.size() && signature[parameters] == '<') {
+            std::size_t depth = 0;
+            do {
+                const char c = signature[parameters++];
+                if (c == '<') { ++depth; }
+                else if (c == '>') { --depth; }
+            } while (parameters < signature.size() && depth != 0);
+        }
+        if (parameters == signature.size() || signature[parameters] != '(') { continue; }
+        if (pos != 0 && signature[pos - 1] != ':' && signature[pos - 1] != ' '
+            && signature[pos - 1] != '*' && signature[pos - 1] != '&'
+            && signature[pos - 1] != '(') { continue; }
+        auto begin = pos;
+        std::size_t angles = 0, parentheses = 0;
+        while (begin != 0) {
+            const char c = signature[begin - 1];
+            if (c == '>') { ++angles; }
+            else if (c == '<' && angles != 0) { --angles; }
+            else if (c == ')') { ++parentheses; }
+            else if (c == '(') {
+                if (parentheses == 0 && angles == 0) { break; }
+                if (parentheses != 0) { --parentheses; }
+            }
+            if (angles == 0 && parentheses == 0 && (c == ' ' || c == '*' || c == '&')) { break; }
+            --begin;
+        }
+        return signature.substr(begin, end - begin);
+    }
+    return name;
+}
+
+} // namespace detail
+
 } // namespace lite_perf
 
 #ifndef LITE_PERF_ENABLED
@@ -411,11 +454,11 @@ private:
 /// Time the current scope with the given label using the singleton.
 #define LITE_PERF_SCOPE(name) \
     ::lite_perf::Scope LITE_PERF_DETAIL_JOIN(lite_perf_scope_, LITE_PERF_DETAIL_UNIQUE){name}
-/// Include class/namespace qualification and overload information where supported.
+/// Include class/namespace qualification, without return types or parameter lists.
 #if defined(_MSC_VER)
-#define LITE_PERF_FUNC() LITE_PERF_SCOPE(__FUNCSIG__)
+#define LITE_PERF_FUNC() LITE_PERF_SCOPE(::lite_perf::detail::qualified_function_name(__FUNCSIG__, __func__))
 #elif defined(__clang__) || defined(__GNUC__)
-#define LITE_PERF_FUNC() LITE_PERF_SCOPE(__PRETTY_FUNCTION__)
+#define LITE_PERF_FUNC() LITE_PERF_SCOPE(::lite_perf::detail::qualified_function_name(__PRETTY_FUNCTION__, __func__))
 #else
 #define LITE_PERF_FUNC() LITE_PERF_SCOPE(__func__)
 #endif
